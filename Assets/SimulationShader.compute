@@ -1,0 +1,178 @@
+// Each #kernel tells which function to compile; you can have many kernels
+// Kernel 0: AppendOrganisms
+#pragma kernel AppendOrganisms
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> DisplayTexture;
+RWTexture2D<float4> PlayerMap;
+RWTexture2D<float4> TerrainMap;
+uint width;
+uint height;
+
+float deltaTime;
+float time;
+uint maxPopulation;
+uint livingPopulation;
+
+struct Organism {
+    float speciesId;
+    // SPECIES COLOR FLOAT4 WILL BE A CONSTANT IN SHADER, no need for every organism to store
+    
+    float2 position;
+    float angle;
+
+    float movementSpeed;
+    float turnSpeed;
+        
+    float herdingFactor;
+
+    float foodLevel;
+    float waterLevel;
+    float visionRadius;
+};
+
+AppendStructuredBuffer<Organism> organismsAppend;
+ConsumeStructuredBuffer<Organism> organismsConsume;
+RWStructuredBuffer<Organism> organismsRead;
+
+// Random Util
+
+uint hash(uint state)
+{
+    state ^= 2747636419u;
+    state *= 2654435769u;
+    state ^= state >> 16;
+    state *= 2654435769u;
+    state ^= state >> 16;
+    state *= 2654435769u;
+    return state;
+}
+
+float scaleToRange01(uint state)
+{
+    return state / 4294967295.0;
+}
+
+// Main Meat
+
+// Append
+
+[numthreads(16,1,1)]
+void AppendOrganisms (uint3 id : SV_DispatchThreadID)
+{
+    if(id.x < 100) {
+
+       	uint random = hash(id.x + time * 100000);
+
+
+        Organism o;
+        if(scaleToRange01(random) < 0.5){
+            o.speciesId = 0.01;
+        } else o.speciesId = 0.02;
+        random = hash(random);
+        o.position = float2(scaleToRange01(random) * width, scaleToRange01(hash(random)) * height);
+        random = hash(hash(random));
+        o.angle = scaleToRange01(random) * 3.141592653 * 2;
+        o.movementSpeed = 0.1;
+        o.turnSpeed = 1;
+        o.herdingFactor = 1;
+        o.foodLevel = 1;
+        o.waterLevel = 1;
+        o.visionRadius = 3;
+
+        organismsAppend.Append(o);
+
+
+        DisplayTexture[ceil(o.position.xy)] = float4(1, 1, 1, 1);
+
+    } else {
+        // OUT OF maxPopulation BOUND
+    }}
+
+// Kernel 1: Consume Organisms
+#pragma kernel ConsumeOrganisms
+
+// Consume
+
+bool IsOrganismDead(Organism o){
+    if(o.foodLevel > 0 && o.waterLevel > 0) {
+        return true;
+    }
+    return false;
+}
+
+[numthreads(16,1,1)]
+void ConsumeOrganisms (uint3 id : SV_DispatchThreadID)
+{
+    if(id.x < 100){
+        Organism o = organismsConsume.Consume();
+        DisplayTexture[ceil(o.position)] = float4(0, 0, 0, 0);
+
+        // Rest of Code
+        //     DisplayTexture[organisms[id.x].position.xy] = float4(1, 1, 1, 1);
+    } else {
+        // OUT OF maxPopulation BOUND
+    }
+}
+
+// Kernel 2: Update Organisms
+#pragma kernel UpdateOrganisms 
+
+[numthreads(16,1,1)]
+void UpdateOrganisms(uint id : SV_DispatchThreadID) 
+{
+    if(id.x >= livingPopulation)
+        return;
+
+    uint random = hash(id.x + time * 100000);
+
+    Organism o = organismsRead[id.x];
+
+    float2 direction = float2(cos(o.angle), sin(o.angle));
+    float2 newPosition = o.position + direction * o.movementSpeed * deltaTime;
+    if(newPosition.x >= width || newPosition.x < 0 || newPosition.y >= height || newPosition.y < 0){
+        newPosition.x = clamp(newPosition.x, 0, width);
+        newPosition.y = clamp(newPosition.y, 0, height);
+
+        organismsRead[id.x].angle = scaleToRange01(random) * 2 * 3.141592653;
+    } 
+    organismsRead[id.x].position = newPosition;
+    organismsRead[id.x].foodLevel -= deltaTime;
+    organismsRead[id.x].waterLevel -= deltaTime * 0.1;
+        
+    // Empty map contains only players
+    PlayerMap[ceil(o.position)] = float4(0, 0, 0, 0);
+    PlayerMap[ceil(newPosition)] = float4(o.speciesId, 0, 0, 0);
+        
+}
+
+// Kernel 3: Draw
+#pragma kernel Draw 
+
+float4 GetSpeciesColor(float speciesId){
+    int actualId = ceil(speciesId * 100); 
+    if(actualId == 1)
+        return float4(0, 0, 1, 0);
+    else if(actualId == 2)
+        return float4(1, 0, 1, 0);
+    else return float4(1, 1, 1, 1);
+}
+
+float4 GetPixelColor(uint3 pix){
+    float speciesId = PlayerMap[pix.xy].x;
+    if(speciesId != 0){
+        return GetSpeciesColor(speciesId);
+    } else {
+        return float4(0, 1, 0, 1);
+    }
+}
+
+[numthreads(8,8,1)]
+void Draw(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < 0 || id.x >= (uint)width || id.y < 0 || id.y >= (uint)height)
+		return;
+
+	DisplayTexture[id.xy] = GetPixelColor(id);
+} 
